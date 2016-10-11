@@ -36,10 +36,14 @@ public class HtmlHttpImageGetter implements ImageGetter {
     TextView container;
     URI baseUri;
     boolean matchParentWidth;
+    HtmlImageGetterLoadCompleteListener htmlImageGetterLoadCompleteListener;
+    public static int THREAD_COUNT = 0;
 
-    public HtmlHttpImageGetter(TextView textView) {
+
+    public HtmlHttpImageGetter(TextView textView, HtmlImageGetterLoadCompleteListener htmlImageGetterLoadCompleteListener) {
         this.container = textView;
         this.matchParentWidth = false;
+        this.htmlImageGetterLoadCompleteListener = htmlImageGetterLoadCompleteListener;
     }
 
     public HtmlHttpImageGetter(TextView textView, String baseUrl) {
@@ -59,9 +63,18 @@ public class HtmlHttpImageGetter implements ImageGetter {
 
     public Drawable getDrawable(String source) {
         UrlDrawable urlDrawable = new UrlDrawable();
-
+        synchronized (this) {
+            THREAD_COUNT += 1;
+        }
         // get the actual source
-        ImageGetterAsyncTask asyncTask = new ImageGetterAsyncTask(urlDrawable, this, container, matchParentWidth);
+        ImageGetterAsyncTask asyncTask;
+        //pass htmlImageGetterLoadCompleteListener is not null, using the new Constructor
+        if (htmlImageGetterLoadCompleteListener == null)
+            asyncTask = new ImageGetterAsyncTask(urlDrawable, this, container, matchParentWidth);
+        else
+            asyncTask = new ImageGetterAsyncTask(urlDrawable, this, container, matchParentWidth,
+                    htmlImageGetterLoadCompleteListener);
+
 
         asyncTask.execute(source);
 
@@ -80,15 +93,30 @@ public class HtmlHttpImageGetter implements ImageGetter {
         private final WeakReference<UrlDrawable> drawableReference;
         private final WeakReference<HtmlHttpImageGetter> imageGetterReference;
         private final WeakReference<View> containerReference;
+        private final WeakReference<HtmlImageGetterLoadCompleteListener> htmlImageGetterLoadCompleteListenerWeakReference;
+        private int threadNumber;
         private String source;
         private boolean matchParentWidth;
         private float scale;
+
+        public ImageGetterAsyncTask(UrlDrawable d, HtmlHttpImageGetter imageGetter, View container, boolean matchParentWidth,
+                                    HtmlImageGetterLoadCompleteListener htmlImageGetterLoadCompleteListener) {
+            this.drawableReference = new WeakReference<>(d);
+            this.imageGetterReference = new WeakReference<>(imageGetter);
+            this.containerReference = new WeakReference<>(container);
+            this.matchParentWidth = matchParentWidth;
+            this.htmlImageGetterLoadCompleteListenerWeakReference = new WeakReference<HtmlImageGetterLoadCompleteListener>
+                    (htmlImageGetterLoadCompleteListener);
+
+        }
 
         public ImageGetterAsyncTask(UrlDrawable d, HtmlHttpImageGetter imageGetter, View container, boolean matchParentWidth) {
             this.drawableReference = new WeakReference<>(d);
             this.imageGetterReference = new WeakReference<>(imageGetter);
             this.containerReference = new WeakReference<>(container);
             this.matchParentWidth = matchParentWidth;
+            this.htmlImageGetterLoadCompleteListenerWeakReference = null;
+
         }
 
         @Override
@@ -99,12 +127,24 @@ public class HtmlHttpImageGetter implements ImageGetter {
 
         @Override
         protected void onPostExecute(Drawable result) {
+            HtmlImageGetterLoadCompleteListener
+                    htmlImageGetterLoadCompleteListener = htmlImageGetterLoadCompleteListenerWeakReference.get();
             if (result == null) {
                 Log.w(HtmlTextView.TAG, "Drawable result is null! (source: " + source + ")");
+                synchronized (this) {
+                    THREAD_COUNT -= 1;
+                }
+                if (htmlImageGetterLoadCompleteListener != null && THREAD_COUNT == 0)
+                    htmlImageGetterLoadCompleteListener.imageGetterLoadComplete(false);
                 return;
             }
             final UrlDrawable urlDrawable = drawableReference.get();
             if (urlDrawable == null) {
+                synchronized (this) {
+                    THREAD_COUNT -= 1;
+                }
+                if (htmlImageGetterLoadCompleteListener != null && THREAD_COUNT == 0)
+                    htmlImageGetterLoadCompleteListener.imageGetterLoadComplete(false);
                 return;
             }
             // set the correct bound according to the result from HTTP call
@@ -115,12 +155,22 @@ public class HtmlHttpImageGetter implements ImageGetter {
 
             final HtmlHttpImageGetter imageGetter = imageGetterReference.get();
             if (imageGetter == null) {
+                synchronized (this) {
+                    THREAD_COUNT -= 1;
+                }
+                if (htmlImageGetterLoadCompleteListener != null && THREAD_COUNT == 0)
+                    htmlImageGetterLoadCompleteListener.imageGetterLoadComplete(false);
                 return;
             }
             // redraw the image by invalidating the container
             imageGetter.container.invalidate();
             // re-set text to fix images overlapping text
             imageGetter.container.setText(imageGetter.container.getText());
+            synchronized (this) {
+                THREAD_COUNT -= 1;
+            }
+            if (htmlImageGetterLoadCompleteListener != null && THREAD_COUNT == 0)
+                htmlImageGetterLoadCompleteListener.imageGetterLoadComplete(true);
         }
 
         /**
@@ -131,7 +181,8 @@ public class HtmlHttpImageGetter implements ImageGetter {
                 InputStream is = fetch(urlString);
                 Drawable drawable = Drawable.createFromStream(is, "src");
                 scale = getScale(drawable);
-                drawable.setBounds(0, 0, (int) (drawable.getIntrinsicWidth() * scale), (int) (drawable.getIntrinsicHeight() * scale));
+                drawable.setBounds(0, 0, (int) (drawable.getIntrinsicWidth() * scale), (int) (drawable.getIntrinsicHeight() *
+                        scale));
                 return drawable;
             } catch (Exception e) {
                 return null;
